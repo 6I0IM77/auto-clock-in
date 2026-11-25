@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">自动打卡</string>
+    <string name="acc_desc">用于在本机自动打开飞书完成上下班打卡，并识别飞书返回的打卡结果（含时间）。仅在本机本人设备上使用。</string>
+</resources>
