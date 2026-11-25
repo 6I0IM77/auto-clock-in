@@ -109,6 +109,11 @@ object PunchConfig {
     // ---------- 反馈 ----------
 
     fun soundOn(): Boolean = p.getBoolean("fb_sound", true)
+
+    /** 提示音音效序号（对应 Feedback.SOUND_STYLES，默认 0 = 经典叮咚） */
+    fun soundStyle(): Int = p.getInt("sound_style", 0).coerceIn(0, 4)
+
+    fun setSoundStyle(v: Int) = p.edit().putInt("sound_style", v.coerceIn(0, 4)).apply()
     fun voiceOn(): Boolean = p.getBoolean("fb_voice", true)
     fun vibrateOn(): Boolean = p.getBoolean("fb_vibrate", true)
     fun overlayOn(): Boolean = p.getBoolean("fb_overlay", true)
@@ -125,6 +130,11 @@ object PunchConfig {
     fun setVoiceOn(v: Boolean) = p.edit().putBoolean("fb_voice", v).apply()
     fun setVibrateOn(v: Boolean) = p.edit().putBoolean("fb_vibrate", v).apply()
     fun setOverlayOn(v: Boolean) = p.edit().putBoolean("fb_overlay", v).apply()
+
+    /** 语音播报的音量百分比（10~100，默认 100）——播报时临时把媒体音量拉到这个档，播完还原 */
+    fun voiceVolume(): Int = p.getInt("voice_vol", 100).coerceIn(10, 100)
+
+    fun setVoiceVolume(v: Int) = p.edit().putInt("voice_vol", v.coerceIn(10, 100)).apply()
 
     /** 屏幕中央提示停留几秒（1~20，默认 5） */
     fun tipSeconds(): Int = p.getInt("tip_seconds", 5).coerceIn(1, 20)

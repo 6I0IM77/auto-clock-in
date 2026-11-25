@@ -181,10 +181,37 @@
 
             <View style="@style/Divider" />
 
+            <LinearLayout android:id="@+id/rowSoundStyle" style="@style/Row">
+                <TextView style="@style/RowLabel" android:text="提示音音效" />
+                <TextView android:id="@+id/tvSoundStyle" style="@style/RowValue" android:text="经典叮咚" />
+                <TextView android:id="@+id/btnSoundTest" style="@style/LinkText" android:text="听一下" />
+                <TextView style="@style/Chevron" />
+            </LinearLayout>
+
+            <TextView style="@style/NoteText" android:text="点开后逐个试听，选哪个就用哪个；提示音和语音播报都受上面「播报音量」控制。" />
+
+            <View style="@style/Divider" />
+
             <LinearLayout style="@style/Row">
                 <TextView style="@style/RowLabel" android:text="语音播报" />
                 <Switch android:id="@+id/swVoice" android:layout_width="wrap_content" android:layout_height="wrap_content" />
             </LinearLayout>
+
+            <View style="@style/Divider" />
+
+            <LinearLayout style="@style/Row">
+                <TextView style="@style/RowLabel" android:text="播报音量" />
+                <TextView android:id="@+id/tvVoiceVolume" style="@style/RowValue" android:text="100%" />
+                <TextView android:id="@+id/btnVoiceTest" style="@style/LinkText" android:text="试听" />
+            </LinearLayout>
+
+            <SeekBar
+                android:id="@+id/sbVoiceVolume"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="90" />
+
+            <TextView style="@style/NoteText" android:text="播报时临时把媒体音量提到这个档位，说完自动还原你原来的音量；嫌吵就往左拉，拉到底也不会静音。" />
 
             <View style="@style/Divider" />
 

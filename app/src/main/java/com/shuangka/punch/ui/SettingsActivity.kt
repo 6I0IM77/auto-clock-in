@@ -28,6 +28,7 @@ import com.shuangka.punch.core.KeepAlive
 import com.shuangka.punch.core.PunchScheduler
 import com.shuangka.punch.core.PunchService
 import com.shuangka.punch.core.engine.AccessibilityUiController
+import com.shuangka.punch.core.feedback.Feedback
 import com.shuangka.punch.core.engine.EnginePicker
 import com.shuangka.punch.core.engine.ShizukuHelper
 import com.shuangka.punch.data.HolidayCalendar
@@ -71,6 +72,10 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var sbTipSeconds: SeekBar
     private lateinit var tvTipSeconds: TextView
 
+    private lateinit var sbVoiceVolume: SeekBar
+    private lateinit var tvVoiceVolume: TextView
+    private lateinit var tvSoundStyle: TextView
+
     private lateinit var etNavPath: EditText
     private lateinit var etInBtn: EditText
     private lateinit var etOutBtn: EditText
@@ -113,6 +118,10 @@ class SettingsActivity : AppCompatActivity() {
 
         sbTipSeconds = findViewById(R.id.sbTipSeconds)
         tvTipSeconds = findViewById(R.id.tvTipSeconds)
+
+        sbVoiceVolume = findViewById(R.id.sbVoiceVolume)
+        tvVoiceVolume = findViewById(R.id.tvVoiceVolume)
+        tvSoundStyle = findViewById(R.id.tvSoundStyle)
 
         etNavPath = findViewById(R.id.etNavPath)
         etInBtn = findViewById(R.id.etInBtn)
@@ -175,6 +184,33 @@ class SettingsActivity : AppCompatActivity() {
             override fun onStartTrackingTouch(bar: SeekBar) {}
             override fun onStopTrackingTouch(bar: SeekBar) {}
         })
+
+        // 语音播报音量（10%~100%，播报时临时抬高媒体音量）
+        sbVoiceVolume.progress = PunchConfig.voiceVolume() - 10
+        tvVoiceVolume.text = "${PunchConfig.voiceVolume()}%"
+        sbVoiceVolume.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                val vol = (progress + 10).coerceIn(10, 100)
+                tvVoiceVolume.text = "$vol%"
+                if (fromUser) PunchConfig.setVoiceVolume(vol)
+            }
+
+            override fun onStartTrackingTouch(bar: SeekBar) {}
+
+            override fun onStopTrackingTouch(bar: SeekBar) {
+                tvVoiceVolume.text = "${PunchConfig.voiceVolume()}%"
+                Feedback.speak(this@SettingsActivity, "语音播报音量 ${PunchConfig.voiceVolume()}%")
+            }
+        })
+        findViewById<TextView>(R.id.btnVoiceTest).setOnClickListener {
+            Feedback.speak(this, "上班打卡成功，现在是早上九点二十二分")
+            toast("试听中，音量 ${PunchConfig.voiceVolume()}%")
+        }
+
+        // 提示音音效：点开单选，点一下就响，方便逐个对比
+        tvSoundStyle.text = Feedback.styleLabel(PunchConfig.soundStyle())
+        findViewById<LinearLayout>(R.id.rowSoundStyle).setOnClickListener { pickSoundStyle() }
+        findViewById<TextView>(R.id.btnSoundTest).setOnClickListener { Feedback.playSound(this) }
 
         swSound.setOnCheckedChangeListener { _, v -> PunchConfig.setSoundOn(v) }
         swVoice.setOnCheckedChangeListener { _, v -> PunchConfig.setVoiceOn(v) }
@@ -365,6 +401,20 @@ class SettingsActivity : AppCompatActivity() {
                 refreshTimeLabels()
                 dialog.dismiss()
             }
+            .show()
+    }
+
+    /** 选提示音：点哪个立刻响哪个，对话框不关，方便来回对比 */
+    private fun pickSoundStyle() {
+        val labels = Feedback.SOUND_STYLES.map { it.label }.toTypedArray()
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("选提示音（点一下试听）")
+            .setSingleChoiceItems(labels, PunchConfig.soundStyle()) { _, which ->
+                PunchConfig.setSoundStyle(which)
+                tvSoundStyle.text = Feedback.styleLabel(which)
+                Feedback.playSound(this)
+            }
+            .setNegativeButton("关闭", null)
             .show()
     }
 

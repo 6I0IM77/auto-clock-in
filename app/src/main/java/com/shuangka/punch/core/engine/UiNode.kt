@@ -35,6 +35,35 @@ class UiNode(
         }
     }
 
+    /**
+     * 只在屏幕底部那一条（悬浮栏 / 标签栏）里找入口。
+     * 飞书消息列表里可能有个同名的群或机器人（比如「假勤」），
+     * 那种条目在内容区，按位置就能把它排掉。
+     */
+    fun findTabInBottomBar(keyword: String, bottomRatio: Double = 0.72): UiNode? {
+        val k = keyword.trim()
+        if (k.isEmpty()) return null
+        val h = bounds.height()
+        if (h <= 0) return null
+        val minCenterY = bounds.top + h * bottomRatio
+        val maxItemHeight = h * 0.13
+
+        val candidates = visit().filter { n ->
+            val t = n.text.trim()
+            t.isNotEmpty() &&
+                t.length <= 10 &&
+                !t.contains("\n") &&
+                t.contains(k, ignoreCase = true) &&
+                n.bounds.width() > 0 && n.bounds.height() > 0 &&
+                n.bounds.height() <= maxItemHeight &&
+                n.bounds.centerY() >= minCenterY
+        }
+        // 越靠下、越小巧越像标签栏里的图标
+        return candidates.minWithOrNull(
+            compareBy<UiNode>({ -it.bounds.centerY() }, { it.bounds.width() * it.bounds.height() }, { it.text.length })
+        )
+    }
+
     fun findByKeywords(keywords: List<String>): UiNode? {
         for (k in keywords) {
             findByKeyword(k)?.let { return it }

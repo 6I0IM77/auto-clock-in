@@ -1,14 +1,18 @@
 package com.shuangka.punch.core.feedback
 
 import android.content.Context
+import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.RingtoneManager
 import android.media.ToneGenerator
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import com.shuangka.punch.data.PunchConfig
 import com.shuangka.punch.data.PunchType
 import java.util.Locale
@@ -20,6 +24,36 @@ object Feedback {
     private var ttsReady = false
     private val pending = StringBuilder()
 
+    /** 播报时临时抬高的媒体音量，播完还原 */
+    private var appCtx: Context? = null
+    private var savedVolume = -1
+    private var speakingNow = false
+    private val main = Handler(Looper.getMainLooper())
+    private val restoreTask: Runnable = object : Runnable {
+        override fun run() {
+            // 语音还在说就先别降，等说完
+            if (speakingNow) main.postDelayed(this, 1200L) else restoreVolume()
+        }
+    }
+
+    /** 可选的提示音。system=true 表示用系统默认通知铃声 */
+    data class SoundStyle(
+        val label: String,
+        val tone: Int,
+        val durationMs: Long,
+        val system: Boolean = false
+    )
+
+    val SOUND_STYLES = listOf(
+        SoundStyle("经典叮咚", ToneGenerator.TONE_PROP_ACK, 420L),
+        SoundStyle("清脆双响", ToneGenerator.TONE_PROP_BEEP2, 560L),
+        SoundStyle("电子确认", ToneGenerator.TONE_CDMA_CONFIRM, 460L),
+        SoundStyle("上扬提示", ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 1100L),
+        SoundStyle("系统通知音", 0, 900L, system = true)
+    )
+
+    fun styleLabel(index: Int): String = SOUND_STYLES.getOrElse(index) { SOUND_STYLES[0] }.label
+
     fun success(ctx: Context, type: PunchType, time: String) {
         if (PunchConfig.soundOn()) playSound(ctx)
         if (PunchConfig.vibrateOn()) vibrate(ctx)
@@ -30,12 +64,19 @@ object Feedback {
     }
 
     fun playSound(ctx: Context) {
+        val style = SOUND_STYLES.getOrElse(PunchConfig.soundStyle()) { SOUND_STYLES[0] }
+        if (style.system) {
+            playSystemSound(ctx)
+            return
+        }
+        boostVolume(ctx)
+        scheduleRestore(style.durationMs + 650)
         Thread {
             var tone: ToneGenerator? = null
             val ok = try {
-                tone = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 85)
-                tone.startTone(ToneGenerator.TONE_PROP_ACK, 320)
-                Thread.sleep(420L)
+                tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90)
+                tone.startTone(style.tone, style.durationMs.toInt())
+                Thread.sleep(style.durationMs + 120)
                 true
             } catch (e: Exception) {
                 false
@@ -45,7 +86,10 @@ object Feedback {
                 } catch (e: Exception) {
                 }
             }
-            if (!ok) playSystemSound(ctx)
+            if (!ok) {
+                playSystemSound(ctx)
+                if (!speakingNow) restoreVolume()
+            }
         }.start()
     }
 
@@ -68,14 +112,23 @@ object Feedback {
             pending.append(text).append('，')
             return
         }
+        speakingNow = true
+        boostVolume(ctx)
+        scheduleRestore(15000L)
         try {
-            engine.speak(
+            val ret = engine.speak(
                 text,
                 if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD,
                 null,
                 "shuangka_" + System.currentTimeMillis()
             )
+            if (ret != TextToSpeech.SUCCESS) {
+                speakingNow = false
+                restoreVolume()
+            }
         } catch (e: Exception) {
+            speakingNow = false
+            restoreVolume()
         }
     }
 
@@ -86,29 +139,102 @@ object Feedback {
     }
 
     private fun ensureTts(ctx: Context): TextToSpeech? {
+        appCtx = ctx.applicationContext
         tts?.let { return it }
         val engine = TextToSpeech(ctx.applicationContext) { status ->
             ttsReady = status == TextToSpeech.SUCCESS
             if (ttsReady) {
                 try {
                     tts?.language = Locale.SIMPLIFIED_CHINESE
-                    // 稍微慢一点、音量拉满，报时的字更容易听清
+                    // 明确走媒体通道，这样「播报音量」调的是同一个流
+                    tts?.setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    // 稍微慢一点，报时的字更容易听清
                     tts?.setSpeechRate(0.95f)
                     tts?.setPitch(1.0f)
+                    tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                        override fun onStart(utteranceId: String?) {}
+
+                        override fun onDone(utteranceId: String?) {
+                            afterUtterance()
+                        }
+
+                        @Deprecated("Deprecated in Java")
+                        override fun onError(utteranceId: String?) {
+                            afterUtterance()
+                        }
+                    })
                 } catch (e: Exception) {
                 }
                 if (pending.isNotEmpty()) {
                     val text = pending.toString()
                     pending.setLength(0)
                     try {
+                        boostVolume(ctx)
                         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "shuangka_pending")
                     } catch (e: Exception) {
+                        restoreVolume()
                     }
                 }
             }
         }
         tts = engine
         return engine
+    }
+
+    /**
+     * 把媒体音量临时抬到设置里的百分比，播完还原。
+     * TTS 本身没有音量档，只有把系统媒体流推到目标档位才真能变响。
+     */
+    private fun boostVolume(ctx: Context) {
+        try {
+            val am = ctx.getSystemService(AudioManager::class.java) ?: return
+            val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            if (max <= 0) return
+            val cur = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+            val target = Math.round(max * PunchConfig.voiceVolume() / 100f).coerceIn(0, max)
+            if (target <= cur) return
+            if (savedVolume < 0) savedVolume = cur
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+        } catch (e: Exception) {
+            savedVolume = -1
+            return
+        }
+        // 兜底：引擎没回调 onDone 也不能一直把音量顶着
+        scheduleRestore(20000L)
+    }
+
+    private fun scheduleRestore(delayMs: Long) {
+        main.removeCallbacks(restoreTask)
+        main.postDelayed(restoreTask, delayMs)
+    }
+
+    /** 一句说完：后面还有排队的话就别降音量，全部说完再还原 */
+    private fun afterUtterance() {
+        main.post {
+            speakingNow = try {
+                tts?.isSpeaking == true
+            } catch (e: Exception) {
+                false
+            }
+            if (!speakingNow) restoreVolume()
+        }
+    }
+
+    private fun restoreVolume() {
+        main.removeCallbacks(restoreTask)
+        val saved = savedVolume
+        savedVolume = -1
+        if (saved < 0) return
+        try {
+            appCtx?.getSystemService(AudioManager::class.java)
+                ?.setStreamVolume(AudioManager.STREAM_MUSIC, saved, 0)
+        } catch (e: Exception) {
+        }
     }
 
     /** 用系统通知音兜底（ToneGenerator 被占用时） */
