@@ -3,6 +3,7 @@ package com.shuangka.punch.core.feedback
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioManager
+import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.media.ToneGenerator
 import android.os.Build
@@ -15,26 +16,33 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import com.shuangka.punch.data.PunchConfig
 import com.shuangka.punch.data.PunchType
+import java.io.File
 import java.util.Locale
 
-/** 打卡成功的那一下反馈：提示音 + 语音 + 震动 */
+/**
+ * 打卡成功的那一下反馈：提示音 + 语音 + 震动。
+ *
+ * 音量只在本 App 内部调：先把语音合成成 wav，再用 MediaPlayer 播放，
+ * 用 setVolume 控制这一路音频的幅度，系统媒体音量一点都不动。
+ */
 object Feedback {
+
+    /** 合成语音的基础放大量：TTS 默认偏小，先整体抬 1.8 倍，再叠用户设的百分比 */
+    private const val PCM_BASE_GAIN = 1.8
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
-    private val pending = StringBuilder()
 
-    /** 播报时临时抬高的媒体音量，播完还原 */
     private var appCtx: Context? = null
-    private var savedVolume = -1
-    private var speakingNow = false
     private val main = Handler(Looper.getMainLooper())
-    private val restoreTask: Runnable = object : Runnable {
-        override fun run() {
-            // 语音还在说就先别降，等说完
-            if (speakingNow) main.postDelayed(this, 1200L) else restoreVolume()
-        }
-    }
+
+    /** 待播的句子（QUEUE_ADD 会追加在后面） */
+    private val queue = ArrayDeque<String>()
+
+    /** 正在合成或正在播放，同一时刻只处理一句 */
+    private var busy = false
+    private var player: MediaPlayer? = null
+    private val files = HashMap<String, File>()
 
     /** 可选的提示音。system=true 表示用系统默认通知铃声 */
     data class SoundStyle(
@@ -69,12 +77,12 @@ object Feedback {
             playSystemSound(ctx)
             return
         }
-        boostVolume(ctx)
-        scheduleRestore(style.durationMs + 650)
+        // ToneGenerator 的第二个参数就是这个音的幅度，只影响这一下，不碰系统音量
+        val amp = PunchConfig.voiceVolume().coerceIn(10, 100)
         Thread {
             var tone: ToneGenerator? = null
             val ok = try {
-                tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90)
+                tone = ToneGenerator(AudioManager.STREAM_MUSIC, amp)
                 tone.startTone(style.tone, style.durationMs.toInt())
                 Thread.sleep(style.durationMs + 120)
                 true
@@ -86,10 +94,7 @@ object Feedback {
                 } catch (e: Exception) {
                 }
             }
-            if (!ok) {
-                playSystemSound(ctx)
-                if (!speakingNow) restoreVolume()
-            }
+            if (!ok) playSystemSound(ctx)
         }.start()
     }
 
@@ -106,30 +111,21 @@ object Feedback {
         }
     }
 
+    /** 说一句。flush=true 会打断正在说的、清掉排队的 */
     fun speak(ctx: Context, text: String, flush: Boolean = true) {
+        appCtx = ctx.applicationContext
         val engine = ensureTts(ctx) ?: return
         if (!ttsReady) {
-            pending.append(text).append('，')
+            queue.addLast(text)
             return
         }
-        speakingNow = true
-        boostVolume(ctx)
-        scheduleRestore(15000L)
-        try {
-            val ret = engine.speak(
-                text,
-                if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD,
-                null,
-                "shuangka_" + System.currentTimeMillis()
-            )
-            if (ret != TextToSpeech.SUCCESS) {
-                speakingNow = false
-                restoreVolume()
-            }
-        } catch (e: Exception) {
-            speakingNow = false
-            restoreVolume()
+        if (flush) {
+            queue.clear()
+            stopPlayback()
+            busy = false
         }
+        queue.addLast(text)
+        pump()
     }
 
     /** 上下班两张卡都打上时，单独再来一句 */
@@ -146,95 +142,193 @@ object Feedback {
             if (ttsReady) {
                 try {
                     tts?.language = Locale.SIMPLIFIED_CHINESE
-                    // 明确走媒体通道，这样「播报音量」调的是同一个流
-                    tts?.setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build()
-                    )
-                    // 稍微慢一点，报时的字更容易听清
                     tts?.setSpeechRate(0.95f)
                     tts?.setPitch(1.0f)
                     tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                         override fun onStart(utteranceId: String?) {}
 
                         override fun onDone(utteranceId: String?) {
-                            afterUtterance()
+                            val id = utteranceId ?: return
+                            val f = synchronized(files) { files.remove(id) }
+                            if (f != null && f.exists() && f.length() > 0L) {
+                                main.post { playFile(f) }
+                            } else {
+                                // 没合成到文件，说明走的是引擎直接朗读，读完了就继续下一句
+                                main.post {
+                                    busy = false
+                                    pump()
+                                }
+                            }
                         }
 
                         @Deprecated("Deprecated in Java")
                         override fun onError(utteranceId: String?) {
-                            afterUtterance()
+                            main.post {
+                                busy = false
+                                pump()
+                            }
                         }
                     })
                 } catch (e: Exception) {
                 }
-                if (pending.isNotEmpty()) {
-                    val text = pending.toString()
-                    pending.setLength(0)
-                    try {
-                        boostVolume(ctx)
-                        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "shuangka_pending")
-                    } catch (e: Exception) {
-                        restoreVolume()
-                    }
-                }
+                pump()
             }
         }
         tts = engine
         return engine
     }
 
-    /**
-     * 把媒体音量临时抬到设置里的百分比，播完还原。
-     * TTS 本身没有音量档，只有把系统媒体流推到目标档位才真能变响。
-     */
-    private fun boostVolume(ctx: Context) {
-        try {
-            val am = ctx.getSystemService(AudioManager::class.java) ?: return
-            val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-            if (max <= 0) return
-            val cur = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-            val target = Math.round(max * PunchConfig.voiceVolume() / 100f).coerceIn(0, max)
-            if (target <= cur) return
-            if (savedVolume < 0) savedVolume = cur
-            am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+    /** 取队列里的第一句去合成（引擎不支持合成到文件就退回直接朗读） */
+    private fun pump() {
+        if (busy) return
+        val engine = tts ?: return
+        if (!ttsReady) return
+        val ctx = appCtx ?: return
+        val text = queue.firstOrNull() ?: return
+        queue.removeFirst()
+
+        busy = true
+        val id = "sk" + System.currentTimeMillis()
+        val out = File(ctx.cacheDir, "$id.wav")
+        val ret = try {
+            engine.synthesizeToFile(text, null, out, id)
         } catch (e: Exception) {
-            savedVolume = -1
-            return
+            TextToSpeech.ERROR
         }
-        // 兜底：引擎没回调 onDone 也不能一直把音量顶着
-        scheduleRestore(20000L)
-    }
-
-    private fun scheduleRestore(delayMs: Long) {
-        main.removeCallbacks(restoreTask)
-        main.postDelayed(restoreTask, delayMs)
-    }
-
-    /** 一句说完：后面还有排队的话就别降音量，全部说完再还原 */
-    private fun afterUtterance() {
-        main.post {
-            speakingNow = try {
-                tts?.isSpeaking == true
+        if (ret == TextToSpeech.SUCCESS) {
+            synchronized(files) { files[id] = out }
+            // 引擎不回调 onDone 时别一直卡住
+            main.postDelayed({
+                val pending = synchronized(files) { files.remove(id) }
+                if (pending != null) {
+                    pending.delete()
+                    busy = false
+                    pump()
+                }
+            }, 12000L)
+        } else {
+            // 极少数引擎不支持「合成到文件」，退回直接读，此时音量由系统媒体音量决定
+            busy = false
+            try {
+                engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, id + "_raw")
+                busy = true
             } catch (e: Exception) {
-                false
             }
-            if (!speakingNow) restoreVolume()
         }
     }
 
-    private fun restoreVolume() {
-        main.removeCallbacks(restoreTask)
-        val saved = savedVolume
-        savedVolume = -1
-        if (saved < 0) return
+    /** 用 MediaPlayer 播合成好的 wav，音量只作用于这一路音频 */
+    private fun playFile(file: File) {
+        val ctx = appCtx ?: return
         try {
-            appCtx?.getSystemService(AudioManager::class.java)
-                ?.setStreamVolume(AudioManager.STREAM_MUSIC, saved, 0)
+            amplify(file, PCM_BASE_GAIN)
+            stopPlayback()
+            val volume = (PunchConfig.voiceVolume() / 100f).coerceIn(0f, 1f)
+            val mp = MediaPlayer()
+            mp.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            mp.setVolume(volume, volume)
+            mp.setDataSource(file.absolutePath)
+            mp.setOnCompletionListener { done ->
+                try {
+                    done.release()
+                } catch (e: Exception) {
+                }
+                file.delete()
+                player = null
+                busy = false
+                pump()
+            }
+            mp.setOnErrorListener { bad, _, _ ->
+                try {
+                    bad.release()
+                } catch (e: Exception) {
+                }
+                file.delete()
+                player = null
+                busy = false
+                pump()
+                true
+            }
+            mp.prepare()
+            mp.start()
+            player = mp
+        } catch (e: Exception) {
+            file.delete()
+            busy = false
+            pump()
+        }
+    }
+
+    private fun stopPlayback() {
+        try {
+            player?.stop()
         } catch (e: Exception) {
         }
+        try {
+            player?.release()
+        } catch (e: Exception) {
+        }
+        player = null
+    }
+
+    /**
+     * 把合成好的 wav（16bit PCM）整体放大一档，再交给 MediaPlayer。
+     * 这样「基础音量」是动的 App 自己这一段波形，系统音量一点不碰；
+     * 放大量留了余量，只有极少数峰值会被压到 32767。
+     */
+    private fun amplify(file: File, gain: Double) {
+        if (gain <= 1.0) return
+        try {
+            val bytes = file.readBytes()
+            if (bytes.size < 44) return
+
+            // 找 data 块（TTS 生成的 wav 一般是 16bit PCM 单声道）
+            var dataStart = -1
+            var dataLen = 0
+            var pos = 12
+            while (pos + 8 <= bytes.size) {
+                val id = String(bytes, pos, 4, Charsets.US_ASCII)
+                val size = readLeInt(bytes, pos + 4)
+                if (size < 0) return
+                if (id == "data") {
+                    dataStart = pos + 8
+                    dataLen = minOf(size, bytes.size - dataStart)
+                    break
+                }
+                pos += 8 + size + (size and 1)
+            }
+            if (dataStart < 0 || dataLen < 2) return
+
+            val out = bytes.copyOf()
+            val samples = dataLen / 2
+            var i = 0
+            while (i < samples) {
+                val idx = dataStart + i * 2
+                var sample = (out[idx].toInt() and 0xFF) or (out[idx + 1].toInt() shl 8)
+                if (sample >= 0x8000) sample -= 0x10000
+                var v = (sample * gain).toInt()
+                if (v > 32767) v = 32767
+                if (v < -32768) v = -32768
+                out[idx] = (v and 0xFF).toByte()
+                out[idx + 1] = ((v shr 8) and 0xFF).toByte()
+                i++
+            }
+            file.writeBytes(out)
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun readLeInt(bytes: ByteArray, at: Int): Int {
+        if (at + 4 > bytes.size) return -1
+        return (bytes[at].toInt() and 0xFF) or
+            ((bytes[at + 1].toInt() and 0xFF) shl 8) or
+            ((bytes[at + 2].toInt() and 0xFF) shl 16) or
+            ((bytes[at + 3].toInt() and 0xFF) shl 24)
     }
 
     /** 用系统通知音兜底（ToneGenerator 被占用时） */

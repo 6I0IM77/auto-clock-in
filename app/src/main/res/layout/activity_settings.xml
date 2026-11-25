@@ -211,7 +211,7 @@
                 android:layout_height="wrap_content"
                 android:max="90" />
 
-            <TextView style="@style/NoteText" android:text="播报时临时把媒体音量提到这个档位，说完自动还原你原来的音量；嫌吵就往左拉，拉到底也不会静音。" />
+            <TextView style="@style/NoteText" android:text="只调本 App 自己播报的音量，系统媒体音量一点都不动；100% 是这个 App 能放的最大声，嫌吵就往左拉，拉到底也不会静音。" />
 
             <View style="@style/Divider" />
 
