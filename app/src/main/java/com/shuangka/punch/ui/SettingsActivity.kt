@@ -185,12 +185,12 @@ class SettingsActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(bar: SeekBar) {}
         })
 
-        // 语音播报音量（10%~100%，播报时临时抬高媒体音量）
-        sbVoiceVolume.progress = PunchConfig.voiceVolume() - 10
+        // 语音播报音量（0%~1000%，只调 App 自己这段音频）
+        sbVoiceVolume.progress = PunchConfig.voiceVolume() / 10
         tvVoiceVolume.text = "${PunchConfig.voiceVolume()}%"
         sbVoiceVolume.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
-                val vol = (progress + 10).coerceIn(10, 100)
+                val vol = (progress * 10).coerceIn(0, 1000)
                 tvVoiceVolume.text = "$vol%"
                 if (fromUser) PunchConfig.setVoiceVolume(vol)
             }

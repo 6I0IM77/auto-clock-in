@@ -131,10 +131,10 @@ object PunchConfig {
     fun setVibrateOn(v: Boolean) = p.edit().putBoolean("fb_vibrate", v).apply()
     fun setOverlayOn(v: Boolean) = p.edit().putBoolean("fb_overlay", v).apply()
 
-    /** 语音播报的音量百分比（10~100，默认 100）——播报时临时把媒体音量拉到这个档，播完还原 */
-    fun voiceVolume(): Int = p.getInt("voice_vol", 100).coerceIn(10, 100)
+    /** 语音播报音量（0~1000%，默认 300）。只调 App 自己那段音频的幅度，系统音量不动 */
+    fun voiceVolume(): Int = p.getInt("voice_vol", 300).coerceIn(0, 1000)
 
-    fun setVoiceVolume(v: Int) = p.edit().putInt("voice_vol", v.coerceIn(10, 100)).apply()
+    fun setVoiceVolume(v: Int) = p.edit().putInt("voice_vol", v.coerceIn(0, 1000)).apply()
 
     /** 屏幕中央提示停留几秒（1~20，默认 5） */
     fun tipSeconds(): Int = p.getInt("tip_seconds", 5).coerceIn(1, 20)

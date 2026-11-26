@@ -209,9 +209,9 @@
                 android:id="@+id/sbVoiceVolume"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:max="90" />
+                android:max="100" />
 
-            <TextView style="@style/NoteText" android:text="只调本 App 自己播报的音量，系统媒体音量一点都不动；100% 是这个 App 能放的最大声，嫌吵就往左拉，拉到底也不会静音。" />
+            <TextView style="@style/NoteText" android:text="只调本 App 自己播报的音量，系统音量不动；范围 0~1000%，超过 100% 会整体放大波形，越大越容易发闷，按听感自己调。" />
 
             <View style="@style/Divider" />
 

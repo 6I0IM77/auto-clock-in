@@ -27,7 +27,7 @@ import java.util.Locale
  */
 object Feedback {
 
-    /** 合成语音的基础放大量：TTS 默认偏小，先整体抬 1.8 倍，再叠用户设的百分比 */
+    /** 合成语音的基础放大量：TTS 默认偏小，先整体抬 1.8 倍，再叠用户设的百分比（0~1000%） */
     private const val PCM_BASE_GAIN = 1.8
 
     private var tts: TextToSpeech? = null
@@ -77,8 +77,8 @@ object Feedback {
             playSystemSound(ctx)
             return
         }
-        // ToneGenerator 的第二个参数就是这个音的幅度，只影响这一下，不碰系统音量
-        val amp = PunchConfig.voiceVolume().coerceIn(10, 100)
+        // ToneGenerator 的幅度上限就是 100，超过也只能到顶，不碰系统音量
+        val amp = PunchConfig.voiceVolume().coerceIn(0, 100)
         Thread {
             var tone: ToneGenerator? = null
             val ok = try {
@@ -221,9 +221,9 @@ object Feedback {
     private fun playFile(file: File) {
         val ctx = appCtx ?: return
         try {
-            amplify(file, PCM_BASE_GAIN)
+            // 总增益 = 基础 1.8 × 用户百分比（0~1000%），直接作用在波形上
+            amplify(file, PCM_BASE_GAIN * (PunchConfig.voiceVolume() / 100.0))
             stopPlayback()
-            val volume = (PunchConfig.voiceVolume() / 100f).coerceIn(0f, 1f)
             val mp = MediaPlayer()
             mp.setAudioAttributes(
                 AudioAttributes.Builder()
@@ -231,7 +231,6 @@ object Feedback {
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )
-            mp.setVolume(volume, volume)
             mp.setDataSource(file.absolutePath)
             mp.setOnCompletionListener { done ->
                 try {
@@ -277,12 +276,16 @@ object Feedback {
     }
 
     /**
-     * 把合成好的 wav（16bit PCM）整体放大一档，再交给 MediaPlayer。
-     * 这样「基础音量」是动的 App 自己这一段波形，系统音量一点不碰；
-     * 放大量留了余量，只有极少数峰值会被压到 32767。
+     * 把合成好的 wav（16bit PCM）按 gain 整体放大，再交给 MediaPlayer。
+     * 只动 App 自己这一段波形，系统音量一点不碰；
+     * 增益超过 1 时会用 tanh 软限幅，爆音变成「闷一点」而不是刺耳的削顶。
      */
     private fun amplify(file: File, gain: Double) {
-        if (gain <= 1.0) return
+        if (gain <= 0.0) {
+            file.delete()
+            return
+        }
+        if (gain == 1.0) return
         try {
             val bytes = file.readBytes()
             if (bytes.size < 44) return
@@ -304,6 +307,7 @@ object Feedback {
             }
             if (dataStart < 0 || dataLen < 2) return
 
+            val limit = 32767.0
             val out = bytes.copyOf()
             val samples = dataLen / 2
             var i = 0
@@ -311,9 +315,12 @@ object Feedback {
                 val idx = dataStart + i * 2
                 var sample = (out[idx].toInt() and 0xFF) or (out[idx + 1].toInt() shl 8)
                 if (sample >= 0x8000) sample -= 0x10000
-                var v = (sample * gain).toInt()
-                if (v > 32767) v = 32767
-                if (v < -32768) v = -32768
+                val scaled = sample * gain
+                val v = if (kotlin.math.abs(scaled) <= limit) {
+                    scaled.toInt()
+                } else {
+                    (limit * kotlin.math.tanh(scaled / limit)).toInt()
+                }
                 out[idx] = (v and 0xFF).toByte()
                 out[idx + 1] = ((v shr 8) and 0xFF).toByte()
                 i++
