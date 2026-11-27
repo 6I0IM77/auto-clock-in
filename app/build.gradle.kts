@@ -11,8 +11,8 @@ android {
         applicationId = "com.shuangka.punch"
         minSdk = 26
         targetSdk = 34
-        versionCode = 48
-        versionName = "1.0"
+        versionCode = 51
+        versionName = "1.0.0"
     }
 
     buildTypes {

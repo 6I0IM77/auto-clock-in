@@ -14,6 +14,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import com.shuangka.punch.R
 import com.shuangka.punch.data.PunchConfig
 import com.shuangka.punch.data.PunchType
 import java.io.File
@@ -66,9 +67,41 @@ object Feedback {
         if (PunchConfig.soundOn()) playSound(ctx)
         if (PunchConfig.vibrateOn()) vibrate(ctx)
         if (PunchConfig.voiceOn()) {
-            // 时间读成「早上九点二十二分」，避免引擎把 09:22 读成「零九 冒号 二二」
-            speak(ctx, "${type.label}打卡成功，现在是${SpokenTime.of(time)}")
+            // 内置的豆包风格配音（归一化到满幅，干净不破音）
+            playClip(ctx, if (type == PunchType.IN) R.raw.voice_in else R.raw.voice_out)
         }
+    }
+
+    /** 播内置语音文件：先复制到缓存，按设置百分比放大波形（tanh 软限幅，不破音），再交给 MediaPlayer */
+    fun playClip(ctx: Context, resId: Int) {
+        appCtx = ctx.applicationContext
+        if (busy) return
+        busy = true
+        Thread {
+            val tmp = try {
+                val f = File.createTempFile("skclip", ".wav", ctx.cacheDir)
+                val input = ctx.resources.openRawResource(resId)
+                val output = f.outputStream()
+                try {
+                    input.copyTo(output)
+                } finally {
+                    input.close()
+                    output.close()
+                }
+                f
+            } catch (e: Exception) {
+                null
+            }
+            if (tmp == null) {
+                busy = false
+                return@Thread
+            }
+            // 内置配音已离线归一化并留足余量，这里不再做超过 100% 的放大，
+            // 避免高音量下波形饱和产生滋啦/破音；滑块高于 100% 也只保持最大干净响度。
+            val clipGain = (PunchConfig.voiceVolume() / 100.0).coerceIn(0.0, 1.0)
+            amplify(tmp, clipGain)
+            main.post { playFile(tmp) }
+        }.start()
     }
 
     fun playSound(ctx: Context) {
@@ -131,7 +164,7 @@ object Feedback {
     /** 上下班两张卡都打上时，单独再来一句 */
     fun allDone(ctx: Context) {
         if (!PunchConfig.voiceOn()) return
-        speak(ctx, "今天上班和下班都打上卡了，辛苦啦", flush = false)
+        playClip(ctx, R.raw.voice_alldone)
     }
 
     private fun ensureTts(ctx: Context): TextToSpeech? {
@@ -151,6 +184,9 @@ object Feedback {
                             val id = utteranceId ?: return
                             val f = synchronized(files) { files.remove(id) }
                             if (f != null && f.exists() && f.length() > 0L) {
+                                // 系统 TTS 的兜底路径：波形增益 + 软限幅，总增益封顶避免削波
+                                val ttsGain = (PCM_BASE_GAIN * (PunchConfig.voiceVolume() / 100.0)).coerceIn(0.0, 1.2)
+                                amplify(f, ttsGain)
                                 main.post { playFile(f) }
                             } else {
                                 // 没合成到文件，说明走的是引擎直接朗读，读完了就继续下一句
@@ -217,12 +253,10 @@ object Feedback {
         }
     }
 
-    /** 用 MediaPlayer 播合成好的 wav，音量只作用于这一路音频 */
+    /** 用 MediaPlayer 播合成好的 wav（音量已在波形上处理过） */
     private fun playFile(file: File) {
         val ctx = appCtx ?: return
         try {
-            // 总增益 = 基础 1.8 × 用户百分比（0~1000%），直接作用在波形上
-            amplify(file, PCM_BASE_GAIN * (PunchConfig.voiceVolume() / 100.0))
             stopPlayback()
             val mp = MediaPlayer()
             mp.setAudioAttributes(
@@ -276,33 +310,31 @@ object Feedback {
     }
 
     /**
-     * 把合成好的 wav（16bit PCM）按 gain 整体放大，再交给 MediaPlayer。
-     * 只动 App 自己这一段波形，系统音量一点不碰；
-     * 增益超过 1 时会用 tanh 软限幅，爆音变成「闷一点」而不是刺耳的削顶。
+     * 把 wav（16bit PCM）按 gain 整体缩放，全程 tanh 软限幅：
+     * 超过上限的部分平滑饱和，听感偏闷但不会出「撕拉」的削顶声。
      */
     private fun amplify(file: File, gain: Double) {
         if (gain <= 0.0) {
             file.delete()
             return
         }
-        if (gain == 1.0) return
         try {
             val bytes = file.readBytes()
             if (bytes.size < 44) return
 
-            // 找 data 块（TTS 生成的 wav 一般是 16bit PCM 单声道）
+            // 找 data 块（16bit PCM；data 长度写 0xFFFFFFFF 的按文件末尾算）
             var dataStart = -1
             var dataLen = 0
             var pos = 12
             while (pos + 8 <= bytes.size) {
                 val id = String(bytes, pos, 4, Charsets.US_ASCII)
                 val size = readLeInt(bytes, pos + 4)
-                if (size < 0) return
                 if (id == "data") {
                     dataStart = pos + 8
-                    dataLen = minOf(size, bytes.size - dataStart)
+                    dataLen = if (size > 0) minOf(size, bytes.size - dataStart) else bytes.size - dataStart
                     break
                 }
+                if (size < 0) return
                 pos += 8 + size + (size and 1)
             }
             if (dataStart < 0 || dataLen < 2) return

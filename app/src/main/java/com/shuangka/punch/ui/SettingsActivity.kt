@@ -199,11 +199,11 @@ class SettingsActivity : AppCompatActivity() {
 
             override fun onStopTrackingTouch(bar: SeekBar) {
                 tvVoiceVolume.text = "${PunchConfig.voiceVolume()}%"
-                Feedback.speak(this@SettingsActivity, "语音播报音量 ${PunchConfig.voiceVolume()}%")
+                Feedback.playClip(this@SettingsActivity, R.raw.voice_test)
             }
         })
         findViewById<TextView>(R.id.btnVoiceTest).setOnClickListener {
-            Feedback.speak(this, "上班打卡成功，现在是早上九点二十二分")
+            Feedback.playClip(this, R.raw.voice_test)
             toast("试听中，音量 ${PunchConfig.voiceVolume()}%")
         }
 

@@ -131,8 +131,8 @@ object PunchConfig {
     fun setVibrateOn(v: Boolean) = p.edit().putBoolean("fb_vibrate", v).apply()
     fun setOverlayOn(v: Boolean) = p.edit().putBoolean("fb_overlay", v).apply()
 
-    /** 语音播报音量（0~1000%，默认 300）。只调 App 自己那段音频的幅度，系统音量不动 */
-    fun voiceVolume(): Int = p.getInt("voice_vol", 300).coerceIn(0, 1000)
+    /** 语音播报音量（0~1000%，默认 100；内置豆包配音已归一化到满幅，100% 就是干净的最大声） */
+    fun voiceVolume(): Int = p.getInt("voice_vol", 100).coerceIn(0, 1000)
 
     fun setVoiceVolume(v: Int) = p.edit().putInt("voice_vol", v.coerceIn(0, 1000)).apply()
 
