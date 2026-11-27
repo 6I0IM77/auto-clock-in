@@ -96,9 +96,8 @@ object Feedback {
                 busy = false
                 return@Thread
             }
-            // 内置配音已离线归一化并留足余量，这里不再做超过 100% 的放大，
-            // 避免高音量下波形饱和产生滋啦/破音；滑块高于 100% 也只保持最大干净响度。
-            val clipGain = (PunchConfig.voiceVolume() / 100.0).coerceIn(0.0, 1.0)
+            // 滑块 0~1000% 真实作用在波形上（0~10 倍增益），超限部分走 tanh 软限幅，避免硬削波
+            val clipGain = (PunchConfig.voiceVolume() / 100.0).coerceIn(0.0, 10.0)
             amplify(tmp, clipGain)
             main.post { playFile(tmp) }
         }.start()
@@ -184,9 +183,8 @@ object Feedback {
                             val id = utteranceId ?: return
                             val f = synchronized(files) { files.remove(id) }
                             if (f != null && f.exists() && f.length() > 0L) {
-                                // 系统 TTS 的兜底路径：波形增益 + 软限幅，总增益封顶避免削波
-                                val ttsGain = (PCM_BASE_GAIN * (PunchConfig.voiceVolume() / 100.0)).coerceIn(0.0, 1.2)
-                                amplify(f, ttsGain)
+                                // 系统 TTS 的兜底路径：基础增益叠加滑块百分比（0~1000%），tanh 软限幅兜底
+                                amplify(f, PCM_BASE_GAIN * (PunchConfig.voiceVolume() / 100.0).coerceIn(0.0, 10.0))
                                 main.post { playFile(f) }
                             } else {
                                 // 没合成到文件，说明走的是引擎直接朗读，读完了就继续下一句
@@ -340,6 +338,7 @@ object Feedback {
             if (dataStart < 0 || dataLen < 2) return
 
             val limit = 32767.0
+            val knee = 28000.0
             val out = bytes.copyOf()
             val samples = dataLen / 2
             var i = 0
@@ -348,10 +347,12 @@ object Feedback {
                 var sample = (out[idx].toInt() and 0xFF) or (out[idx + 1].toInt() shl 8)
                 if (sample >= 0x8000) sample -= 0x10000
                 val scaled = sample * gain
-                val v = if (kotlin.math.abs(scaled) <= limit) {
+                val v = if (kotlin.math.abs(scaled) <= knee) {
                     scaled.toInt()
                 } else {
-                    (limit * kotlin.math.tanh(scaled / limit)).toInt()
+                    val s = kotlin.math.sign(scaled)
+                    val extra = (limit - knee) * kotlin.math.tanh((kotlin.math.abs(scaled) - knee) / (limit - knee))
+                    (s * (knee + extra)).toInt()
                 }
                 out[idx] = (v and 0xFF).toByte()
                 out[idx + 1] = ((v shr 8) and 0xFF).toByte()

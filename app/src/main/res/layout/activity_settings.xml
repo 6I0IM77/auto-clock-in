@@ -211,7 +211,7 @@
                 android:layout_height="wrap_content"
                 android:max="100" />
 
-            <TextView style="@style/NoteText" android:text="内置豆包风格配音，已离线清洗并留足音量余量，100% 就是干净的最大声；超过 100% 不再额外放大，避免破音。只调本 App 音量，系统音量不动。" />
+            <TextView style="@style/NoteText" android:text="内置豆包风格配音；音量滑块 0~1000% 真实放大波形，超过上限的部分由软限幅平滑兜底，不会硬削波。只调本 App 音量，系统音量不动。" />
 
             <View style="@style/Divider" />
 
